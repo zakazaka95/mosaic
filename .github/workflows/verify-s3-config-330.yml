@@ -34,7 +34,7 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
         run: cargo clippy --locked -p mosaic --all-features --all-targets
-      - name: Verify regressions reject original behavior
+      - name: Verify compatibility and original behavior regressions
         shell: bash
         run: |
           set -euo pipefail
@@ -42,6 +42,26 @@ jobs:
           backup_file="$RUNNER_TEMP/mosaic-s3-fixed.rs"
           cp "$source_file" "$backup_file"
           trap 'cp "$backup_file" "$source_file"' EXIT
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          path = Path("bin/mosaic/src/s3.rs")
+          source = path.read_text()
+          initial = subprocess.check_output(["git", "show", "71c68938974ed9db442742165ea81a7a7c384b47:bin/mosaic/src/s3.rs"], text=True)
+          prefix = initial.split("#[cfg(test)]", 1)[0]
+          tests = source.split("#[cfg(test)]", 1)[1]
+          path.write_text(prefix + "#[cfg(test)]" + tests)
+          PY
+          compatibility_log="$RUNNER_TEMP/s3-independent-options.log"
+          if cargo test --locked -p mosaic --all-features s3::tests::static_credentials_preserve_independent_environment_options -- --exact --nocapture > "$compatibility_log" 2>&1; then
+            cat "$compatibility_log"
+            echo "Compatibility regression unexpectedly passed on the initial patch"
+            exit 1
+          fi
+          cat "$compatibility_log"
+          grep -q 'test result: FAILED' "$compatibility_log"
+          grep -q 'assertion' "$compatibility_log"
+          echo "Expected independent-options assertion failure confirmed"
           python3 - <<'PY'
           from pathlib import Path
           path = Path("bin/mosaic/src/s3.rs")
